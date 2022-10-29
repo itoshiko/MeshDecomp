@@ -247,6 +247,102 @@ void construct_adjacency(
     HANDLE_ERROR(cudaDeviceSynchronize());
 }
 
+template<int BLOCK_DIM_X, int BLOCK_DIM_Y>
+static __global__
+void _calc_dis_sum(float* dist_matrix, float* dist_sum, size_t face_num) {
+    int threadId = (threadIdx.y * blockDim.x) + threadIdx.x;
+    int face_id = blockIdx.x + blockIdx.y * gridDim.x;
+    if (face_id < face_num)
+    {
+        float _sum = 0.;
+        // Block wise reduction so that one thread in each block holds sum of thread results
+        typedef cub::BlockReduce<float, BLOCK_DIM_X, cub::BLOCK_REDUCE_RAKING, BLOCK_DIM_Y> BlockReduce;
+        __shared__ typename BlockReduce::TempStorage temp_storage;
+#pragma unroll
+        for (int idx = threadId; idx < face_num; idx += BLOCK_DIM_X * BLOCK_DIM_Y)
+        {
+            _sum += dist_matrix[face_id * face_num + idx];
+        }
+        float aggregate = BlockReduce(temp_storage).Sum(_sum);
+        __syncthreads();
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+        {
+            dist_sum[face_id] = aggregate;
+        }
+    }
+}
+
+static __global__
+void _min_dis_to_reps(float* dist_matrix, float* min_dis, int* reps, int k_rep, size_t face_num) {
+    int face_id = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
+    if (face_id >= face_num)
+        return;
+    float _min_dis = 9999999.;
+#pragma unroll
+    for (int i = 0; i < k_rep; i++)
+    {
+        if (face_id == reps[i])
+        {
+            min_dis[face_id] = -1.;
+            return;
+        }
+        float tmp = dist_matrix[face_num * face_id + reps[i]];
+        if (tmp < _min_dis)
+            _min_dis = tmp;
+    }
+    min_dis[face_id] = _min_dis;
+}
+
+int search_reps_k(float* dist_matrix, int* reps, size_t face_num, int max_rep)
+{
+    int _grid = int(sqrt(double(face_num))) + 1;
+    dim3 dimGridSum(_grid, _grid);
+    dim3 dimGridMin((face_num - 1) / (32 * 16) + 1, 1);
+    dim3 dimBlockSize(32, 16, 1);
+
+    dim3 dimGridPhase1((face_num - 1) / (32 * 16) + 1, 1);
+
+    int* reps_dev = nullptr;
+    HANDLE_ERROR(cudaMalloc(&reps_dev, sizeof(int) * max_rep));
+    float* val = nullptr;
+    HANDLE_ERROR(cudaMalloc(&val, sizeof(float) * max_rep));
+
+    // find first representative, by getting minimum sum of distances
+    float* dist_sum = nullptr;
+    HANDLE_ERROR(cudaMalloc(&dist_sum, face_num * sizeof(float)));
+    _calc_dis_sum<32, 16> << <dimGridSum, dimBlockSize >> > (dist_matrix, dist_sum, face_num);
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaDeviceSynchronize());
+    ArrayArgmin(dist_sum, val, reps_dev, face_num);
+
+    // add new representative
+    for (int i = 1; i < max_rep; i++)
+    {
+        // we can reuse the memory of dist_sum
+        _min_dis_to_reps << <dimGridMin, dimBlockSize >> > (dist_matrix, dist_sum, reps_dev, i, face_num);
+        HANDLE_ERROR(cudaGetLastError());
+        HANDLE_ERROR(cudaDeviceSynchronize());
+        // Maximizing minimum distance to previous representatives
+        ArrayArgmax(dist_sum, val + i, reps_dev + i, face_num);
+    }
+
+    // find maximum gap
+    float* val_host = new float[max_rep];
+    HANDLE_ERROR(cudaMemcpy(reps, reps_dev, sizeof(int) * max_rep, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(val_host, val, sizeof(float) * max_rep, cudaMemcpyDeviceToHost));
+    float max_gap = -1.;
+    int rep_k = 1;
+    for (int i = 1; i < max_rep - 1; i++)
+    {
+        if (max_gap > (val_host[i + 1] - val_host[i]))
+        {
+            max_gap = val_host[i + 1] - val_host[i];
+            rep_k = i + 1;
+        }
+    }
+    return rep_k;
+}
+
 static __global__
 void _calc_prob(float* dist_matrix, float* prob_matrix, int* reps, int k_rep, size_t face_num) {
     int face_id = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
@@ -263,7 +359,12 @@ void _calc_prob(float* dist_matrix, float* prob_matrix, int* reps, int k_rep, si
     {
         prob_matrix[face_id * k_rep + r] = (1. / (dist_matrix[face_id * face_num + reps[r]] + 1e-6)) / denominator;
     }
-    // printf("face %d rep %d  %f\n", face_id, rep_id, prob_matrix[face_id * k_rep + rep_id]);
+#ifdef _DEBUG
+    if (face_id <= 20)
+    {
+        printf("face id %d rep 0 %f rep 1 %f rep 2 %f\n", face_id, prob_matrix[face_id * k_rep], prob_matrix[face_id * k_rep + 1], prob_matrix[face_id * k_rep + 2]);
+    }
+#endif
 }
 
 template<int BLOCK_DIM_X, int BLOCK_DIM_Y>
@@ -296,7 +397,16 @@ void _calc_patch_avg_dis(float* dist_matrix, float* avg_dist, int* type, size_t 
         __syncthreads();
         if (threadIdx.x == 0 && threadIdx.y == 0)
         {
-            avg_dist[face_num * rep_id + face_id] = aggregate / (float)total_cnt;
+            if (total_cnt == 0)
+                avg_dist[face_num * rep_id + face_id] = 9999999.;
+            else
+                avg_dist[face_num * rep_id + face_id] = aggregate / (float)total_cnt;
+#ifdef _DEBUG
+            if (face_id <= 20)
+            {
+                printf("rep %d  total %f cnt %d\n", rep_id, aggregate, total_cnt);
+            }
+#endif
         }
     }
 }
@@ -317,6 +427,12 @@ void _recalc_prob(float* avg_dist_patch, float* prob_matrix, int k_rep, size_t f
     {
         prob_matrix[face_id * k_rep + r] = (1. / (avg_dist_patch[face_num * r + face_id] + 1e-6)) / denominator;
     }
+#ifdef _DEBUG
+    if (face_id <= 20)
+    {
+        printf("face id %d rep 0 %f rep 1 %f rep 2 %f\n", face_id, prob_matrix[face_id * k_rep], prob_matrix[face_id * k_rep + 1], prob_matrix[face_id * k_rep + 2]);
+    }
+#endif
 }
 
 /**
@@ -331,7 +447,7 @@ void _recalc_prob(float* avg_dist_patch, float* prob_matrix, int k_rep, size_t f
  * @param k_rep: Number of representation
  * @param face_num: Number of faces
  */
-template<int BLOCK_SIM_X, int BLOCK_DIM_Y>
+template<int BLOCK_DIM_X, int BLOCK_DIM_Y>
 static __global__
 void _calc_face_matric(float* dist_matrix, float* prob_matrix, float* matric, int k_rep, size_t face_num) {
     int threadId = (threadIdx.y * blockDim.x) + threadIdx.x;
@@ -339,12 +455,12 @@ void _calc_face_matric(float* dist_matrix, float* prob_matrix, float* matric, in
     int rep_id = blockIdx.z;
     if (face_id < face_num)
     {
-#pragma unroll
         float _sum = 0.;
         // Block wise reduction so that one thread in each block holds sum of thread results
-        typedef cub::BlockReduce<float, BLOCK_SIM_X, cub::BLOCK_REDUCE_RAKING, BLOCK_DIM_Y> BlockReduce;
+        typedef cub::BlockReduce<float, BLOCK_DIM_X, cub::BLOCK_REDUCE_RAKING, BLOCK_DIM_Y> BlockReduce;
         __shared__ typename BlockReduce::TempStorage temp_storage;
-        for (int idx = threadId; idx < face_num; idx += BLOCK_SIM_X * BLOCK_DIM_Y)
+#pragma unroll
+        for (int idx = threadId; idx < face_num; idx += BLOCK_DIM_X * BLOCK_DIM_Y)
         {
             _sum += dist_matrix[face_id * face_num + idx] * prob_matrix[idx * k_rep + rep_id];
         }
@@ -364,6 +480,7 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
     dim3 dimGridPhase1((face_num - 1) / (32 * 16) + 1, 1);
     dim3 dimGridPhase2(_grid, _grid, k_rep);
     dim3 dimBlockSize(32, 16, 1);
+    dim3 dimBlockSizeAvg(16, 16, 1);
 
     // first phase: probability calculation
     int* reps_dev = nullptr;
@@ -374,12 +491,21 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
     // second phase: assign label and recompute probability according to method stated in paper
     HANDLE_ERROR(cudaGetLastError());
     HANDLE_ERROR(cudaDeviceSynchronize());
-    get_face_label(prob_matrix, type, type + face_num, k_rep, eps, face_num);
+    bool* mask = new bool[k_rep];
+    for (int i = 0; i < k_rep; ++i)
+    {
+        mask[i] = true;
+        for (int j = 0; j < i; ++j)
+            if (reps[j] == reps[i])
+                mask[i] &= 0;
+    }
+    bool* mask_dev = nullptr;
+    HANDLE_ERROR(cudaMalloc(&mask_dev, sizeof(bool) * k_rep));
+    HANDLE_ERROR(cudaMemcpy(mask_dev, mask, sizeof(bool) * k_rep, cudaMemcpyHostToDevice));
+    get_face_label(prob_matrix, type, type + face_num, mask_dev, k_rep, eps, face_num);
     float* avg_dist = nullptr;
     HANDLE_ERROR(cudaMalloc(&avg_dist, face_num * k_rep * sizeof(float)));
-    HANDLE_ERROR(cudaGetLastError());
-    HANDLE_ERROR(cudaDeviceSynchronize());
-    _calc_patch_avg_dis<32, 16> << <dimGridPhase2, dimBlockSize >> > (dist_matrix, avg_dist, type, face_num);
+    _calc_patch_avg_dis<16, 16> << <dimGridPhase2, dimBlockSizeAvg >> > (dist_matrix, avg_dist, type, face_num);
     HANDLE_ERROR(cudaGetLastError());
     HANDLE_ERROR(cudaDeviceSynchronize());
     _recalc_prob << <dimGridPhase1, dimBlockSize >> > (avg_dist, prob_matrix, k_rep, face_num);
@@ -398,10 +524,11 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
     for (int rid = 0; rid < k_rep; rid++)
     {
         int rep_prev = reps[rid];
-        // printDevice << <1, 1 >> > (matric_matrix + rid * face_num, face_num);
         ArrayArgmin(matric_matrix + rid * face_num, min_val, reps_dev + rid, face_num);
+#ifdef _DEBUG
         printDevice << <1, 1 >> > (min_val, 1);
-        // printDevice << <1, 1 >> > (reps_dev + rid, 1);
+        printDevice << <1, 1 >> > (reps_dev + rid, 1);
+#endif
         HANDLE_ERROR(cudaMemcpy(reps + rid, reps_dev + rid, sizeof(int), cudaMemcpyDeviceToHost));
         if (rep_prev != reps[rid])
             updated = true;
@@ -409,7 +536,7 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
     if (!updated)
     {
         printf("Converge!\n");
-        get_face_label(prob_matrix, type, type + face_num, k_rep, eps, face_num);
+        get_face_label(prob_matrix, type, type + face_num, mask_dev, k_rep, eps, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
         _calc_patch_avg_dis<32, 16> << <dimGridPhase2, dimBlockSize >> > (dist_matrix, avg_dist, type, face_num);
@@ -418,20 +545,22 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
         _recalc_prob << <dimGridPhase1, dimBlockSize >> > (avg_dist, prob_matrix, k_rep, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
-        get_face_label(prob_matrix, type, type + face_num, k_rep, eps, face_num);
+        get_face_label(prob_matrix, type, type + face_num, mask_dev, k_rep, eps, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
     }
     return updated;
 }
 
-static __device__
-void _serach_top_2(float* data, int num, float* result_val, int* result_idx)
+static __device__ __forceinline__
+void _serach_top_2(float* data, int num, float* result_val, int* result_idx, bool* mask)
 {
     float tmp = -999999.;
     int tmp_idx = -1;
     for (int i = 0; i < num; i++)
     {
+        if (mask != nullptr && mask[i] < TOL) 
+            continue;
         if (data[i] > tmp)
         {
             tmp = data[i];
@@ -445,6 +574,8 @@ void _serach_top_2(float* data, int num, float* result_val, int* result_idx)
 #pragma unroll
     for (int i = 0; i < num; i++)
     {
+        if (mask != nullptr && mask[i] < TOL)
+            continue;
         if ((data[i] > tmp) && (i != result_idx[0]))
         {
             tmp = data[i];
@@ -456,30 +587,33 @@ void _serach_top_2(float* data, int num, float* result_val, int* result_idx)
 }
 
 static __global__
-void _classify_vertex(float* prob_matrix, int* type1, int* type2, int k_rep, float eps, size_t cnt)
+void _classify_vertex(float* prob_matrix, int* type1, int* type2, bool* mask, int k_rep, float eps, size_t cnt)
 {
     int vid = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
     if (vid >= cnt)
         return;
     int top2_idx[2];
     float top2_prob[2];
-    _serach_top_2(prob_matrix + vid * k_rep, k_rep, top2_prob, top2_idx);
-    if (top2_prob[0] > 0.5 + eps)
+    _serach_top_2(prob_matrix + vid * k_rep, k_rep, top2_prob, top2_idx, mask);
+    if (top2_prob[0] - top2_prob[1] > eps * 2)
     {
         type1[vid] = top2_idx[0];
         type2[vid] = -1;
-        return;
     }
-    type1[vid] = top2_idx[0];
-    type2[vid] = top2_idx[1];
+    else
+    {
+        type1[vid] = top2_idx[0];
+        type2[vid] = top2_idx[1];
+    }
 }
 
-void get_face_label(float* prob_matrix, int* type1, int* type2, int k_rep, float eps, size_t face_num)
+void get_face_label(float* prob_matrix, int* type1, int* type2, bool* mask, int k_rep, float eps, size_t face_num)
 {
-    int BLOCK_SIZE_1 = 16, BLOCK_SIZE_2 = 32;
+    int BLOCK_SIZE_1 = 32, BLOCK_SIZE_2 = 16;
     dim3 blockSize(BLOCK_SIZE_1, BLOCK_SIZE_2, 1);
-    _classify_vertex << <(face_num - 1) / (BLOCK_SIZE_1 * BLOCK_SIZE_2) + 1, blockSize >> >
-        (prob_matrix, type1, type2, k_rep, eps, face_num);
+    dim3 gridSize((face_num - 1) / (BLOCK_SIZE_1 * BLOCK_SIZE_2) + 1);
+    _classify_vertex << <gridSize, blockSize >> >
+        (prob_matrix, type1, type2, mask, k_rep, eps, face_num);
     HANDLE_ERROR(cudaGetLastError());
     HANDLE_ERROR(cudaDeviceSynchronize());
 }

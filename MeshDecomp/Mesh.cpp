@@ -139,21 +139,27 @@ void Mesh::genFuzzyDecomp(bool two)
         HANDLE_ERROR(cudaMemcpy(max_idx_host, max_idx, sizeof(int), cudaMemcpyDeviceToHost));
         reps[0] = *max_idx_host / num_faces;
         reps[1] = *max_idx_host % num_faces;
+        k_rep = 2;
     }
     else
     {
-        exit(-1);
+        reps = new int[max_rep_k];
+        k_rep = search_reps_k(adj_dist_matrix, reps, num_faces, max_rep_k);
     }
 
-    std::cout << reps[0] << "  " << reps[1] << std::endl;
-    std::cout << verts[faces[reps[0] * 3] * 3] << "  " << verts[faces[reps[0] * 3] * 3 + 1] << "  " << verts[faces[reps[0] * 3] * 3 + 2] << std::endl;
-    std::cout << verts[faces[reps[1] * 3] * 3] << "  " << verts[faces[reps[1] * 3] * 3 + 1] << "  " << verts[faces[reps[1] * 3] * 3 + 2] << std::endl;
+    std::cout << "Representatives retrieved, number: " << k_rep << std::endl;
+    for (int i = 0; i < k_rep; i++)
+    {
+        std::cout << " " << i + 1 << ": id=" << reps[i] << ", coord(";
+        std::cout << verts[faces[reps[i] * 3] * 3] << "  " << verts[faces[reps[i] * 3] * 3 + 1] << "  " << verts[faces[reps[i] * 3] * 3 + 2];
+        std::cout << ")" << std::endl;
+    }
 
-    // compute representation
+    // update representation
     float* prob_matrix = nullptr;
     float* matric_matrix = nullptr;
-    HANDLE_ERROR(cudaMalloc(&prob_matrix, 2 * num_faces * sizeof(float)));
-    HANDLE_ERROR(cudaMalloc(&matric_matrix, 2 * num_faces * sizeof(float)));
+    HANDLE_ERROR(cudaMalloc(&prob_matrix, k_rep * num_faces * sizeof(float)));
+    HANDLE_ERROR(cudaMalloc(&matric_matrix, k_rep * num_faces * sizeof(float)));
 
     // get face classification
     if (faces_type == nullptr)
@@ -161,24 +167,25 @@ void Mesh::genFuzzyDecomp(bool two)
 
     for (int iter = 0; iter < REP_ITER_MAX; iter++)
     {
-        std::cout << "UPDATE ITER " << iter << std::endl;
-        bool updated = update_representation(adj_dist_matrix, prob_matrix, matric_matrix, faces_type, reps, 0.05, 2, num_faces);
-
+        bool updated = update_representation(adj_dist_matrix, prob_matrix, matric_matrix, faces_type, reps, 0.05, k_rep, num_faces);
         //cudaMemcpy(prob_debug, prob_matrix, num_faces * 2 * sizeof(float), cudaMemcpyDeviceToHost);
         //std::string path("D:/course_proj/MeshDecomp/debug/face_");
         //path += std::to_string(iter + 1);
         //path += ".obj";
         //debugFcaceProperty(prob_debug, path, true);
-
-        std::cout << reps[0] << "  " << reps[1] << std::endl;
         if (!updated)
             break;
+        std::cout << "UPDATE ITER " << iter << std::endl;
+        for (int i = 0; i < k_rep; i++)
+        {
+            std::cout << " " << i + 1 << ": id=" << reps[i] << ", coord(";
+            std::cout << verts[faces[reps[i] * 3] * 3] << "  " << verts[faces[reps[i] * 3] * 3 + 1] << "  " << verts[faces[reps[i] * 3] * 3 + 2];
+            std::cout << ")" << std::endl;
+        }
     }
-    std::cout << verts[faces[reps[0] * 3] * 3] << "  " << verts[faces[reps[0] * 3] * 3 + 1] << "  " << verts[faces[reps[0] * 3] * 3 + 2] << std::endl;
-    std::cout << verts[faces[reps[1] * 3] * 3] << "  " << verts[faces[reps[1] * 3] * 3 + 1] << "  " << verts[faces[reps[1] * 3] * 3 + 2] << std::endl;
 }
 
-void Mesh::genFinalDecomp(int k_rep)
+void Mesh::genFinalDecomp()
 {
     // prepare for max-flow
     int _n = num_faces;
@@ -192,7 +199,16 @@ void Mesh::genFinalDecomp(int k_rep)
     float* graph_cap_host = new float[num_faces * num_faces];
     type_host = new int[num_faces * k_rep * sizeof(int)];
     HANDLE_ERROR(cudaMemcpy(graph_cap_host, adj_cap_matrix, num_faces * num_faces * sizeof(float), cudaMemcpyDeviceToHost));
-    HANDLE_ERROR(cudaMemcpy(type_host, faces_type, num_faces * k_rep * sizeof(int), cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(type_host, faces_type, num_faces * 2 * sizeof(int), cudaMemcpyDeviceToHost));
+
+    int* cnt = new int[k_rep];
+    for (int i = 0; i < num_faces; i++)
+    {
+        if (type_host[i + num_faces] < 0)
+            cnt[type_host[i]]++;
+    }
+    for (int i = 0; i < k_rep; i++)
+        printf("rep %d  faces cnt %d\n", i, cnt[i]);
 
     // Construct flow network graphs
     for (int i = 0; i < num_faces; i++)
@@ -274,10 +290,45 @@ void Mesh::dumpFile(std::string path)
     for (int i = 0; i < num_faces; i++)
     {
         f << "v" << " " << std::to_string(_center[i * 3]) << " " << std::to_string(_center[i * 3 + 1]) << " " << std::to_string(_center[i * 3 + 2]);
-        if (type_host[i] == 0)
-            f << " " << 1.0 << " " << 0.0 << " " << 0.0 << std::endl;
-        else
-            f << " " << 0.0 << " " << 1.0 << " " << 0.0 << std::endl;
+        switch (type_host[i])
+        {
+        case 0:
+            f << " 0.918 0.2 0.14" << std::endl;
+            break;
+        case 1:
+            f << " 0.6289 0.99 0.34" << std::endl;
+            break;
+        case 2:
+            f << " 0.2 0.52 0.99" << std::endl;
+            break;
+        case 3:
+            f << " 0.96 0.52 0.3" << std::endl;
+            break;
+        case 4:
+            f << " 0.2 0.5 0.5" << std::endl;
+            break;
+        case 5:
+            f << " 0.46 0.095 0.25" << std::endl;
+            break;
+        case 6:
+            f << " 1.0 0.99 0.33" << std::endl;
+            break;
+        case 7:
+            f << " 0.1 0.25 0.05" << std::endl;
+            break;
+        case 8:
+            f << " 0.914 0.195 0.5" << std::endl;
+            break;
+        case 9:
+            f << " 0.418 0.297 0.23" << std::endl;
+            break;
+        case 10:
+            f << " 0.49 0.51 0.124" << std::endl;
+            break;
+        case 11:
+            f << " 0.45 0.168 0.957" << std::endl;
+            break;
+        }
     }
     // Close the file
     f.close();

@@ -29,6 +29,12 @@ void construct_adjacency(
     float delta,
     size_t face_num);
 
+int search_reps_k(
+    float* dist_matrix, 
+    int* reps, 
+    size_t face_num, 
+    int max_rep);
+
 bool update_representation(
     float* dist_matrix,
     float* prob_matrix,
@@ -43,6 +49,7 @@ void get_face_label(
     float* prob_matrix,
     int* type1,
     int* type2,
+    bool* mask,
     int k_rep,
     float eps,
     size_t face_num);

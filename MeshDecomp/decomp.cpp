@@ -5,11 +5,11 @@
 
 int main()
 {
-	Mesh mesh("D:/course_proj/MeshDecomp/asset/smpl_mesh.ply");
+	Mesh mesh("D:/course_proj/MeshDecomp/asset/smpl_mesh_5k.ply");
 	mesh.preProcess();
-	mesh.genFuzzyDecomp(true);
-	mesh.genFinalDecomp(2);
-	mesh.dumpFile("D:/course_proj/MeshDecomp/debug/decomp.obj");
+	mesh.genFuzzyDecomp(false);
+	mesh.genFinalDecomp();
+	mesh.dumpFile("d:/course_proj/meshdecomp/debug/decomp_5k.obj");
 	std::cout << "test\n";
 }
 

@@ -13,7 +13,7 @@ public:
 	Mesh(std::string file);
 	void preProcess();
 	void genFuzzyDecomp(bool two);
-	void genFinalDecomp(int k_rep);
+	void genFinalDecomp();
 	void dumpFile(std::string path);
 	void debugFcaceProperty(float* prop, std::string path, bool normalize);
 	~Mesh();
@@ -24,6 +24,8 @@ private:
 	// parameters
 	size_t dist_matrix_pitch = 0;
 	float delta = 0.8;
+	int max_rep_k = 20;
+	int k_rep = -1;
 
 	// data field
 	size_t num_verts;
