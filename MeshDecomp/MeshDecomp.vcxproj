@@ -92,14 +92,13 @@
     <ClInclude Include="cu_common_util.cuh" />
     <ClInclude Include="floyd_warshall.cuh" />
     <ClInclude Include="helper_math.h" />
-    <ClInclude Include="push_relabel.h" />
     <CudaCompile Include="Mesh.h" />
     <ClInclude Include="miniply.h" />
     <CudaCompile Include="mesh_util.cuh" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="decomp.cpp" />
-    <ClCompile Include="push_relabel.cpp" />
+    <ClCompile Include="flow.hpp" />
     <CudaCompile Include="Mesh.cpp" />
     <ClCompile Include="miniply.cpp" />
   </ItemGroup>

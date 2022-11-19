@@ -5,7 +5,7 @@
 #include "Mesh.h"
 #include "cu_common_util.cuh"
 #include "floyd_warshall.cuh"
-#include "push_relabel.h"
+#include "flow.hpp"
 
 Mesh::Mesh()
 {
@@ -189,11 +189,11 @@ void Mesh::genFinalDecomp()
 {
     // prepare for max-flow
     int _n = num_faces;
-    FuzzyGraph** graphs = new FuzzyGraph*[k_rep - 1];
+    Dinic** graphs = new Dinic *[k_rep - 1];
     for (int g1 = 0; g1 < k_rep - 1; g1++) {
-        graphs[g1] = new FuzzyGraph[k_rep - g1 - 1];
+        graphs[g1] = (Dinic*)operator new((k_rep - g1 - 1) * sizeof(Dinic));
         for (int g2 = 0; g2 < k_rep - g1 - 1; g2++)
-            graphs[g1][g2] = FuzzyGraph(num_faces + 2);
+            new (graphs[g1] + g2) Dinic(num_faces + 2);
     }
     // download flow capacity and patch information to CPU
     float* graph_cap_host = new float[num_faces * num_faces];
@@ -202,6 +202,7 @@ void Mesh::genFinalDecomp()
     HANDLE_ERROR(cudaMemcpy(type_host, faces_type, num_faces * 2 * sizeof(int), cudaMemcpyDeviceToHost));
 
     int* cnt = new int[k_rep];
+    memset(cnt, 0, k_rep * sizeof(int));
     for (int i = 0; i < num_faces; i++)
     {
         if (type_host[i + num_faces] < 0)
@@ -225,15 +226,15 @@ void Mesh::genFinalDecomp()
                     {
                         int gid_1 = min(type_host[num_faces + j], type_host[j]);
                         int gid_2 = max(type_host[num_faces + j], type_host[j]) - gid_1 - 1;
-                        graphs[gid_1][gid_2].add_edge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
-                        graphs[gid_1][gid_2].add_edge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
+                        graphs[gid_1][gid_2].AddEdge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
+                        graphs[gid_1][gid_2].AddEdge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
                         if (type_host[i] == gid_1)
                         {
-                            graphs[gid_1][gid_2].add_edge(num_faces + 2, i + 1, 99999.);  // (source -> i)
+                            graphs[gid_1][gid_2].AddEdge(num_faces + 2, i + 1, 99999.);  // (source -> i)
                         }
                         else
                         {
-                            graphs[gid_1][gid_2].add_edge(i + 1, num_faces + 1, 99999.);  // (i -> sink)
+                            graphs[gid_1][gid_2].AddEdge(i + 1, num_faces + 1, 99999.);  // (i -> sink)
                         }
                     }
                 }
@@ -248,23 +249,23 @@ void Mesh::genFinalDecomp()
                     {
                         int gid_1 = min(type_host[num_faces + i], type_host[i]);
                         int gid_2 = max(type_host[num_faces + i], type_host[i]) - gid_1 - 1;
-                        graphs[gid_1][gid_2].add_edge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
-                        graphs[gid_1][gid_2].add_edge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
+                        graphs[gid_1][gid_2].AddEdge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
+                        graphs[gid_1][gid_2].AddEdge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
                     }
                     // if the other node (j) that this edge connects not fuzzy, add both (i, j), (j, i), (source, j)
                     else
                     {
                         int gid_1 = min(type_host[num_faces + i], type_host[i]);
                         int gid_2 = max(type_host[num_faces + i], type_host[i]) - gid_1 - 1;
-                        graphs[gid_1][gid_2].add_edge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
-                        graphs[gid_1][gid_2].add_edge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
+                        graphs[gid_1][gid_2].AddEdge(i + 1, j + 1, graph_cap_host[i * num_faces + j]);  // (i -> j)
+                        graphs[gid_1][gid_2].AddEdge(j + 1, i + 1, graph_cap_host[i * num_faces + j]);  // (j -> i)
                         if (type_host[j] == gid_1)
                         {
-                            graphs[gid_1][gid_2].add_edge(num_faces + 2, j + 1, 99999.);  // (source -> j)
+                            graphs[gid_1][gid_2].AddEdge(num_faces + 2, j + 1, 99999.);  // (source -> j)
                         }
                         else
                         {
-                            graphs[gid_1][gid_2].add_edge(j + 1, num_faces + 1, 99999.);  // (j -> sink)
+                            graphs[gid_1][gid_2].AddEdge(j + 1, num_faces + 1, 99999.);  // (j -> sink)
                         }
                     }
                 }
@@ -272,11 +273,25 @@ void Mesh::genFinalDecomp()
         }
 
     }
+    
     // Solove max-flow min-cut problem and get final decomposition
     for (int g1 = 0; g1 < k_rep - 1; g1++) {
         for (int g2 = 0; g2 < k_rep - g1 - 1; g2++) {
-            graphs[g1][g2].HLPP_flow();
-            graphs[g1][g2].min_cut_classify(type_host, g1, g1 + g2 + 1, num_faces);
+            std::vector<int> class_g1;
+            graphs[g1][g2].cut_classify(num_faces + 2, num_faces + 1, class_g1);
+            for (auto _v : class_g1)
+            {
+                type_host[_v - 1] = g1;
+                type_host[_v - 1 + num_faces] = -1;
+            }
+        }
+    }
+    for (int i = 0; i < num_faces; i++)
+    {
+        if (type_host[i + num_faces] < 0)
+        {
+            type_host[i] = max(type_host[num_faces + i], type_host[i]);
+            type_host[i + num_faces] = -1;
         }
     }
 }

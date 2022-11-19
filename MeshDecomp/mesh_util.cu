@@ -539,7 +539,7 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
         get_face_label(prob_matrix, type, type + face_num, mask_dev, k_rep, eps, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
-        _calc_patch_avg_dis<32, 16> << <dimGridPhase2, dimBlockSize >> > (dist_matrix, avg_dist, type, face_num);
+        _calc_patch_avg_dis<16, 16> << <dimGridPhase2, dimBlockSizeAvg >> > (dist_matrix, avg_dist, type, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
         _recalc_prob << <dimGridPhase1, dimBlockSize >> > (avg_dist, prob_matrix, k_rep, face_num);
