@@ -91,3 +91,54 @@ void ArrayArgmin(const float* input, float* min_val, int* min_idx, size_t n) {
     HANDLE_ERROR(cudaMemcpy(min_idx, &(d_out->key), sizeof(int), cudaMemcpyDeviceToDevice));
     HANDLE_ERROR(cudaMemcpy(min_val, &(d_out->value), sizeof(float), cudaMemcpyDeviceToDevice));
 }
+
+static __global__
+void filterElem2D(const float* input, float* output, int* valid, size_t n, size_t new_n) {
+    int threadX = blockIdx.x * blockDim.x + threadIdx.x;
+    int threadY = blockIdx.y * blockDim.y + threadIdx.y;
+    if (threadX >= new_n || threadY >= new_n) return;
+    output[threadX * new_n + threadY] = input[valid[threadX] * n + valid[threadY]];
+}
+
+static __global__
+void filterElem1D(const float* input, float* output, int* valid, size_t new_n) {
+    int threadId = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
+    if (threadId >= new_n) return;
+    output[threadId] = input[valid[threadId]];
+}
+
+static __global__
+void filterElem1DF3(const float3* input, float3* output, int* valid, size_t new_n) {
+    int threadId = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
+    if (threadId >= new_n) return;
+    output[threadId] = input[valid[threadId]];
+}
+
+void filterArray(const float* input, float** output, int* valid, int ord, size_t n, size_t new_n) {
+    if (ord == 1)
+    {
+        HANDLE_ERROR(cudaMalloc(output, sizeof(float) * new_n));
+        int BLOCK_SIZE = 32;
+        int _grid = (new_n - 1) / (BLOCK_SIZE * BLOCK_SIZE) + 1;
+        dim3 gridSize(_grid, 1, 1);
+        dim3 dimBlockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
+        filterElem1D << <gridSize, dimBlockSize >> > (input, *output, valid, new_n);
+    }
+    else if (ord == 2)
+    {
+        HANDLE_ERROR(cudaMalloc(output, sizeof(float) * new_n * new_n));
+        int BLOCK_SIZE = 32;
+        int _grid = (new_n - 1) / (BLOCK_SIZE) + 1;
+        dim3 gridSize(_grid, _grid, 1);
+        dim3 dimBlockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
+        filterElem2D << <gridSize, dimBlockSize >> > (input, *output, valid, n, new_n);
+    }
+}
+
+void filterArray3(const float3* input, float3** output, int* valid, size_t new_n) {
+    HANDLE_ERROR(cudaMalloc(output, sizeof(float) * new_n * 3));
+    int _grid = (new_n - 1) / (32 * 16) + 1;
+    dim3 gridSize(_grid, 1, 1);
+    dim3 dimBlockSize(32, 16, 1);
+    filterElem1DF3 << <gridSize, dimBlockSize >> > (input, *output, valid, new_n);
+}

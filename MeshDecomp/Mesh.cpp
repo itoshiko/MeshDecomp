@@ -51,6 +51,32 @@ Mesh::Mesh(std::string file)
     }
 }
 
+Mesh::Mesh(Mesh* mesh, std::vector<int> &select)
+{
+    num_verts = mesh->num_verts;
+    verts = mesh->verts;
+    verts_dev = mesh->verts_dev;
+    faces = (int*)malloc(select.size() * 3 * sizeof(int));
+    num_faces = select.size();
+    for (int i = 0; i < num_faces; i++)
+    {
+        memcpy_s(faces + i * 3, 3 * sizeof(int), mesh->faces + select[i] * 3, 3 * sizeof(int));
+    }
+    HANDLE_ERROR(cudaMalloc(&faces_dev, num_faces * 3 * sizeof(int)));
+    HANDLE_ERROR(cudaMemcpy(faces_dev, faces, num_faces * 3 * sizeof(int), cudaMemcpyHostToDevice));
+
+    int* select_dev = nullptr;
+    HANDLE_ERROR(cudaMalloc(&select_dev, num_faces * sizeof(int)));
+    HANDLE_ERROR(cudaMemcpy(select_dev, select.data(), num_faces * sizeof(int), cudaMemcpyHostToDevice));
+
+    filterArray(mesh->adj_dist_matrix, &adj_dist_matrix, select_dev, 2, mesh->num_faces, num_faces);
+    filterArray(mesh->adj_cap_matrix, &adj_cap_matrix, select_dev, 2, mesh->num_faces, num_faces);
+
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaDeviceSynchronize());
+    master = false;
+}
+
 void Mesh::preProcess()
 {
     // transfer vertices and faces data to GPU
@@ -104,8 +130,21 @@ void Mesh::preProcess()
 
 Mesh::~Mesh()
 {
-    if (verts != nullptr) delete[] verts;
-    if (faces != nullptr) delete[] faces;
+    if (master)
+    {
+        if (verts != nullptr) delete[] verts;
+        if (faces != nullptr) delete[] faces;
+        HANDLE_ERROR(cudaFree(verts_dev));
+        HANDLE_ERROR(cudaFree(face_normal));
+        HANDLE_ERROR(cudaFree(face_center));
+        HANDLE_ERROR(cudaFree(adj_pred_matrix));
+        HANDLE_ERROR(cudaFree(graph_weight_matrix));
+    }
+    if (type_host != nullptr) delete[] type_host;
+    HANDLE_ERROR(cudaFree(faces_dev));
+    HANDLE_ERROR(cudaFree(faces_type));
+    HANDLE_ERROR(cudaFree(adj_dist_matrix));
+    HANDLE_ERROR(cudaFree(adj_cap_matrix));
 }
 
 void Mesh::mapToDev()
@@ -120,7 +159,42 @@ void Mesh::mapToDev()
     HANDLE_ERROR(cudaMemcpy(faces_dev, faces, num_faces * 3 * sizeof(int), cudaMemcpyHostToDevice));
 }
 
-void Mesh::genFuzzyDecomp(bool two)
+void Mesh::decompRecur()
+{
+    std::vector<bool> needDecomp;
+    for (int i = 0; i < k_rep; i++)
+        needDecomp.push_back(true);
+    while (true)
+    {
+        int typeCur = k_rep;
+        std::vector<std::vector<int>> faceSelect;
+        faceSelect.resize(k_rep);
+        for (int fid = 0; fid < num_faces; fid++)
+        {
+            if (needDecomp[type_host[fid]])
+                faceSelect[type_host[fid]].push_back(fid);
+        }
+        for (int tid = 0; tid < typeCur; tid++)
+        {
+            if (needDecomp[tid] && !faceSelect[tid].empty())
+            {
+                Mesh sub = Mesh(this, faceSelect[tid]);
+                sub.genFuzzyDecomp();
+                sub.genFinalDecomp(false);
+                int* subType = sub.getClassification();
+                for (int fid = 0; fid < sub.num_faces; fid++)
+                {
+                    if (subType[fid] != 0)
+                        type_host[faceSelect[tid][fid]] = subType[fid] + k_rep - 1;
+                }
+                k_rep += (sub.k_rep - 1);
+            }
+        }
+        break;
+    }
+}
+
+void Mesh::genFuzzyDecomp()
 {
     if (adj_dist_matrix == nullptr)
         return;
@@ -185,7 +259,7 @@ void Mesh::genFuzzyDecomp(bool two)
     }
 }
 
-void Mesh::genFinalDecomp()
+void Mesh::genFinalDecomp(bool recur)
 {
     // prepare for max-flow
     int _n = num_faces;
@@ -271,7 +345,6 @@ void Mesh::genFinalDecomp()
                 }
             }
         }
-
     }
     
     // Solove max-flow min-cut problem and get final decomposition
@@ -293,6 +366,11 @@ void Mesh::genFinalDecomp()
             type_host[i] = max(type_host[num_faces + i], type_host[i]);
             type_host[i + num_faces] = -1;
         }
+    }
+
+    if (recur)
+    {
+        decompRecur();
     }
 }
 
