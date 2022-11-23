@@ -266,8 +266,11 @@ void _blocked_fw_independent_ph(const int blockId, size_t pitch, const size_t nv
  */
 void cudaBlockedFW(void* weight_matrix, void* pred_matrix, void* distance_matrix, size_t n_vertex, size_t* pitch) {
     HANDLE_ERROR(cudaSetDevice(0));
+    int* pred_matrix_re = nullptr;
     // Copy weight matrix to result distance matrix
     HANDLE_ERROR(cudaMemcpy(distance_matrix, weight_matrix, n_vertex * n_vertex * sizeof(float), cudaMemcpyDeviceToDevice));
+    HANDLE_ERROR(cudaMalloc(&pred_matrix_re, n_vertex * n_vertex * sizeof(int)));
+    HANDLE_ERROR(cudaMemcpy(pred_matrix_re, distance_matrix, n_vertex * n_vertex * sizeof(int), cudaMemcpyDeviceToDevice));
 
     dim3 gridPhase1(1, 1, 1);
     dim3 gridPhase2((n_vertex - 1) / BLOCK_SIZE + 1, 2, 1);
@@ -281,19 +284,19 @@ void cudaBlockedFW(void* weight_matrix, void* pred_matrix, void* distance_matrix
         // Start dependent phase
         // clock_t tmp1 = clock();
         _blocked_fw_dependent_ph << <gridPhase1, dimBlockSize >> >
-            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix);
+            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix_re);
         // t1 += clock() - tmp1;
 
         // tmp1 = clock();
         // Start partially dependent phase
         _blocked_fw_partial_dependent_ph << <gridPhase2, dimBlockSize >> >
-            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix);
+            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix_re);
         // t2 += clock() - tmp1;
 
         // tmp1 = clock();
         // Start independent phase
         _blocked_fw_independent_ph << <gridPhase3, dimBlockSize >> >
-            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix);
+            (blockID, n_vertex, n_vertex, (float*)distance_matrix, (int*)pred_matrix_re);
         // t3 += clock() - tmp1;
     }
 

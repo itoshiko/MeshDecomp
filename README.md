@@ -7,4 +7,5 @@ Reference
 
 * CUDA blocked Floyd Warshall implementation by https://github.com/MTB90/cuda-floyd_warshall
 * Dinic max flow implementation by https://oi-wiki.org/graph/flow/max-flow/
+* ply file reader by https://github.com/vilya/miniply
 

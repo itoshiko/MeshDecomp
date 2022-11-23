@@ -37,6 +37,8 @@ void mod(int* op1, int* op2, int* quotient, int* remainder) {
 
 void ArrayReduceSum(const float* input, float* output, size_t n);
 void ArrayReduceSum(const int* input, int* output, size_t n);
+void ArrayMax(const float* input, float* max_val, size_t n);
+void ArrayMin(const float* input, float* min_val, size_t n);
 void ArrayArgmax(const float* input, float* max_val, int* max_idx, size_t n, float trunc = -1.);
 void ArrayArgmin(const float* input, float* min_val, int* min_idx, size_t n);
 void filterArray(const float* input, float** output, int* valid, int ord, size_t n, size_t new_n);

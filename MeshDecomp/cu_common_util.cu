@@ -22,6 +22,26 @@ void ArrayReduceSum(const int* input, int* output, size_t n) {
     cudaDeviceSynchronize();
 }
 
+void ArrayMax(const float* input, float* max_val, size_t n) {
+    size_t temp_storage_bytes;
+    float* temp_storage = NULL;
+    cub::DeviceReduce::Max(temp_storage, temp_storage_bytes, input, max_val, n);
+    HANDLE_ERROR(cudaMalloc(&temp_storage, temp_storage_bytes));
+    cudaDeviceSynchronize();
+    cub::DeviceReduce::Max(temp_storage, temp_storage_bytes, input, max_val, n);
+    cudaDeviceSynchronize();
+}
+
+void ArrayMin(const float* input, float* min_val, size_t n) {
+    size_t temp_storage_bytes;
+    float* temp_storage = NULL;
+    cub::DeviceReduce::Min(temp_storage, temp_storage_bytes, input, min_val, n);
+    HANDLE_ERROR(cudaMalloc(&temp_storage, temp_storage_bytes));
+    cudaDeviceSynchronize();
+    cub::DeviceReduce::Min(temp_storage, temp_storage_bytes, input, min_val, n);
+    cudaDeviceSynchronize();
+}
+
 static __global__
 void filterElemGt(const float* input, float* output, float th, size_t n) {
     int blockId = blockIdx.x + blockIdx.y * gridDim.x;

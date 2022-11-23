@@ -29,11 +29,27 @@ void construct_adjacency(
     float delta,
     size_t face_num);
 
+float get_dihedral_angle_diff(
+    float3* normals, 
+    int* pred, 
+    size_t face_num);
+
+float get_global_avg_dist(
+    float* dist_matrix, 
+    size_t face_num);
+
 int search_reps_k(
     float* dist_matrix, 
     int* reps, 
     size_t face_num, 
     int max_rep);
+
+void get_patch_avg_dist(
+    float* dist_matrix,
+    float* avg_dist,
+    int* type,
+    int k_rep,
+    size_t face_num);
 
 bool update_representation(
     float* dist_matrix,
@@ -41,6 +57,7 @@ bool update_representation(
     float* matric_matrix,
     int* type,
     int* reps,
+    float* max_dist,
     float eps,
     int k_rep,
     size_t face_num);

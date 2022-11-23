@@ -247,6 +247,41 @@ void construct_adjacency(
     HANDLE_ERROR(cudaDeviceSynchronize());
 }
 
+static __global__
+void _compute_dihedral_angle(float3 *normal, int* pred, float* d_angle, size_t face_num)
+{
+    int f1_id = blockIdx.x * blockDim.x + threadIdx.x;
+    int f2_id = blockIdx.y * blockDim.y + threadIdx.y;
+
+    float _d_ang = 0.;
+    if (!((f1_id < face_num) && (f2_id < face_num)))
+        return;
+    else if (f1_id == f2_id);
+    else if (pred[f1_id * face_num + f2_id] < 0);
+    else _d_ang = acosf(dot(normal[f1_id], normal[f2_id]));
+    // if (_d_ang > 2.5) printf("%d %d %f\n", f1_id, f2_id, _d_ang);
+    d_angle[f1_id * face_num + f2_id] = _d_ang;
+}
+
+float get_dihedral_angle_diff(float3* normals, int* pred, size_t face_num)
+{
+    int BLOCK_SIZE_1 = 16, BLOCK_SIZE_2 = 32;
+    dim3 gridSize((face_num - 1) / BLOCK_SIZE_1 + 1, (face_num - 1) / BLOCK_SIZE_2 + 1, 1);
+    dim3 blockSize(BLOCK_SIZE_1, BLOCK_SIZE_2, 1);
+    float* d_angle = nullptr;
+    HANDLE_ERROR(cudaMalloc(&d_angle, face_num * face_num * sizeof(float)));
+    _compute_dihedral_angle << <gridSize, blockSize >> > (normals, pred, d_angle, face_num);
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaDeviceSynchronize());
+    float* max_min;
+    HANDLE_ERROR(cudaMalloc(&max_min, sizeof(float) * 2));
+    ArrayMax(d_angle, max_min, face_num * face_num);
+    ArrayMin(d_angle, max_min + 1, face_num * face_num);
+    float max_min_host[2];
+    HANDLE_ERROR(cudaMemcpy(max_min_host, max_min, sizeof(float) * 2, cudaMemcpyDeviceToHost));
+    return max_min_host[0] - max_min_host[1];
+}
+
 template<int BLOCK_DIM_X, int BLOCK_DIM_Y>
 static __global__
 void _calc_dis_sum(float* dist_matrix, float* dist_sum, size_t face_num) {
@@ -411,6 +446,89 @@ void _calc_patch_avg_dis(float* dist_matrix, float* avg_dist, int* type, size_t 
     }
 }
 
+void get_patch_avg_dist(float* dist_matrix, float* avg_dist, int* type, int k_rep, size_t face_num)
+{
+    int _grid = int(sqrt(double(face_num))) + 1;
+    dim3 dimGrid(_grid, _grid, k_rep);
+    dim3 dimBlockSizeAvg(16, 16, 1);
+    _calc_patch_avg_dis<16, 16> << <dimGrid, dimBlockSizeAvg >> > (dist_matrix, avg_dist, type, face_num);
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaDeviceSynchronize());
+}
+
+template<int BLOCK_DIM_X, int BLOCK_DIM_Y>
+static __global__
+void _calc_face_avg_dis(float* dist_matrix, float* avg_dist, int* cnt, size_t face_num) {
+    int threadId = (threadIdx.y * blockDim.x) + threadIdx.x;
+    int face_id = blockIdx.x + blockIdx.y * gridDim.x;
+    if (face_id < face_num)
+    {
+        float _sum = 0.;
+        int _cnt = 0;
+        // Block wise reduction so that one thread in each block holds sum of thread results
+        typedef cub::BlockReduce<float, BLOCK_DIM_X, cub::BLOCK_REDUCE_RAKING, BLOCK_DIM_Y> BlockReduceF;
+        typedef cub::BlockReduce<int, BLOCK_DIM_X, cub::BLOCK_REDUCE_RAKING, BLOCK_DIM_Y> BlockReduceI;
+        __shared__ typename BlockReduceF::TempStorage temp_storage_sum;
+        __shared__ typename BlockReduceI::TempStorage temp_storage_cnt;
+#pragma unroll
+        for (int idx = threadId; idx < face_num; idx += BLOCK_DIM_X * BLOCK_DIM_Y)
+        {
+            if (dist_matrix[face_id * face_num + idx] < 99999.)
+            {
+                _sum += dist_matrix[face_id * face_num + idx];
+                _cnt += 1;
+            }
+        }
+        float aggregate = BlockReduceF(temp_storage_sum).Sum(_sum);
+        int total_cnt = BlockReduceI(temp_storage_cnt).Sum(_cnt);
+        __syncthreads();
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+        {
+            avg_dist[face_id] = aggregate / 1024.;
+            cnt[face_id] = total_cnt;
+        }
+    }
+}
+
+float get_global_avg_dist(float* dist_matrix, size_t face_num)
+{
+    int _grid = int(sqrt(double(face_num))) + 1;
+    dim3 dimGrid(_grid, _grid, 1);
+    dim3 dimBlockSizeAvg(16, 16, 1);
+    int *cnt, *global_cnt;
+    float *face_avg, *global_avg;
+    HANDLE_ERROR(cudaMalloc(&cnt, sizeof(int) * face_num));
+    HANDLE_ERROR(cudaMalloc(&face_avg, sizeof(float) * face_num));
+    HANDLE_ERROR(cudaMalloc(&global_cnt, sizeof(int)));
+    HANDLE_ERROR(cudaMalloc(&global_avg, sizeof(float)));
+    _calc_face_avg_dis<16, 16> << <dimGrid, dimBlockSizeAvg >> > (dist_matrix, face_avg, cnt, face_num);
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaDeviceSynchronize());
+    ArrayReduceSum(face_avg, global_avg, face_num);
+    ArrayReduceSum(cnt, global_cnt, face_num);
+    float avg_host;
+    int cnt_host;
+    HANDLE_ERROR(cudaMemcpy(&cnt_host, global_cnt, sizeof(int), cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(&avg_host, global_avg, sizeof(float), cudaMemcpyDeviceToHost));
+    return (avg_host / (float)cnt_host) * 1024.;
+}
+
+static __global__  __forceinline__
+void _get_max_patch_dist(float* result, float* dist_matrix, int* reps, int k_rep, size_t face_num)
+{
+#pragma unroll
+    * result = -1.;
+    for (int i = 0; i < k_rep; i++)
+    {
+        for (int j = 0; j < k_rep; j++)
+        {
+            float tmp = dist_matrix[reps[i] * face_num + reps[j]];
+            if (tmp > *result)
+                *result = tmp;
+        }
+    }
+}
+
 static __global__
 void _recalc_prob(float* avg_dist_patch, float* prob_matrix, int k_rep, size_t face_num) {
     int face_id = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
@@ -474,7 +592,7 @@ void _calc_face_matric(float* dist_matrix, float* prob_matrix, float* matric, in
     }
 }
 
-bool update_representation(float* dist_matrix, float* prob_matrix, float* matric_matrix, int* type, int* reps, float eps, int k_rep, size_t face_num)
+bool update_representation(float* dist_matrix, float* prob_matrix, float* matric_matrix, int* type, int* reps, float* max_dist, float eps, int k_rep, size_t face_num)
 {
     int _grid = int(sqrt(double(face_num))) + 1;
     dim3 dimGridPhase1((face_num - 1) / (32 * 16) + 1, 1);
@@ -548,6 +666,13 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
         get_face_label(prob_matrix, type, type + face_num, mask_dev, k_rep, eps, face_num);
         HANDLE_ERROR(cudaGetLastError());
         HANDLE_ERROR(cudaDeviceSynchronize());
+
+        float* result_dev = nullptr;
+        cudaMalloc(&result_dev, sizeof(float));
+        _get_max_patch_dist << <1, 1 >> > (result_dev, dist_matrix, reps_dev, k_rep, face_num);
+        HANDLE_ERROR(cudaGetLastError());
+        HANDLE_ERROR(cudaDeviceSynchronize());
+        HANDLE_ERROR(cudaMemcpy(max_dist, result_dev, sizeof(float), cudaMemcpyDeviceToHost));
     }
     return updated;
 }

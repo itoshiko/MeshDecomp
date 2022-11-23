@@ -5,6 +5,9 @@
 #include "mesh_util.cuh"
 
 #define REP_ITER_MAX 20
+#define TH_DIST_RATIO 0.25
+#define TH_ANGLE_DIFF 0.30
+#define TH_REP_DIST 0.15
 
 class Mesh
 {
@@ -24,6 +27,7 @@ private:
 	int* getClassification() { return type_host; };
 	int getRepNum() { return k_rep; }
 	Mesh(Mesh* mesh, std::vector<int>& select);
+	void debugNormal();
 	
 	// parameters
 	size_t dist_matrix_pitch = 0;
@@ -32,6 +36,13 @@ private:
 	int k_rep = -1;
 	bool two = false;
 	bool master = true;
+	int max_cnt = 0;
+
+	float max_patch_dist = -1.;
+	float* patch_avg_dist = nullptr;
+	float global_avg_dist = 0.;
+	float dihedral_ang_diff = 0.;
+	float face_max_dist = 0.;
 
 	// data field
 	size_t num_verts;
