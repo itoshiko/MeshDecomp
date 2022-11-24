@@ -85,7 +85,6 @@
   <ItemGroup>
     <CudaCompile Include="cu_common_util.cu" />
     <CudaCompile Include="floyd_warshall.cu" />
-    <CudaCompile Include="kernel.cu" />
     <CudaCompile Include="mesh_util.cu" />
   </ItemGroup>
   <ItemGroup>

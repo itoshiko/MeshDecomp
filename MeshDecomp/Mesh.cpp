@@ -79,6 +79,8 @@ Mesh::Mesh(Mesh* mesh, std::vector<int> &select)
     dihedral_ang_diff = get_dihedral_angle_diff(face_normal, adj_pred_matrix, num_faces);
     master = false;
     face_max_dist = mesh->face_max_dist;
+    global_avg_dist = mesh->global_avg_dist;
+    local_avg_dist = get_global_avg_dist(adj_dist_matrix, num_faces);
 }
 
 void Mesh::preProcess()
@@ -131,6 +133,7 @@ void Mesh::preProcess()
     // run ASAP using Floyd-Warshall
     cudaBlockedFW(graph_weight_matrix, adj_pred_matrix, adj_dist_matrix, num_faces, &dist_matrix_pitch);
     global_avg_dist = get_global_avg_dist(adj_dist_matrix, num_faces);
+    local_avg_dist = global_avg_dist;
 }
 
 Mesh::~Mesh()
@@ -171,13 +174,7 @@ void Mesh::decompRecur()
         return;
     std::vector<bool> needDecomp;
     for (int i = 0; i < k_rep; i++)
-    {
-        printf("Dist ratio: %f\n", patch_avg_dist[i] / global_avg_dist);
-        if (patch_avg_dist[i] / global_avg_dist < TH_DIST_RATIO)
-            needDecomp.push_back(false);
-        else
             needDecomp.push_back(true);
-    }
     while (true)
     {
         vector<bool>::iterator _need = std::find(needDecomp.begin(), needDecomp.end(), true);
@@ -207,7 +204,8 @@ void Mesh::decompRecur()
             {
                 Mesh sub = Mesh(this, faceSelect[tid]);
                 printf("ang diff  %f\n", sub.dihedral_ang_diff);
-                if (sub.dihedral_ang_diff < TH_ANGLE_DIFF)
+                printf("dist ratio  %f\n", sub.local_avg_dist / sub.global_avg_dist);
+                if (sub.dihedral_ang_diff < TH_ANGLE_DIFF || sub.local_avg_dist / sub.global_avg_dist < TH_DIST_RATIO)
                 {
                     needDecomp[tid] = false;
                     continue;
@@ -234,16 +232,9 @@ void Mesh::decompRecur()
                 }
                 else
                 {
-                    printf("Dist ratio: %f\n", sub.patch_avg_dist[0] / global_avg_dist);
-                    needDecomp[tid] = (sub.patch_avg_dist[0] / global_avg_dist < TH_DIST_RATIO) ? false : true;
+                    needDecomp[tid] = true;
                     for (int i = 1; i < sub.k_rep; i++)
-                    {
-                        printf("Dist ratio: %f\n", sub.patch_avg_dist[i] / global_avg_dist);
-                        if (sub.patch_avg_dist[i] / global_avg_dist < TH_DIST_RATIO)
-                            needDecomp.push_back(false);
-                        else
-                            needDecomp.push_back(true);
-                    }
+                        needDecomp.push_back(true);
                 }
                 k_rep += (sub.k_rep - 1);
             }
@@ -442,16 +433,8 @@ void Mesh::genFinalDecomp(bool recur)
         for (int i = 0; i < k_rep; i++)
             if (cnt[i] > max_patch_cnt) max_patch_cnt = cnt[i];
 
-        if (max_patch_cnt == num_faces)
-            for (int i = 0; i < k_rep; i++) patch_avg_dist[i] = 0.;
-        else
+        if (max_patch_cnt != num_faces)
         {
-            patch_avg_dist = new float[k_rep];
-            float* patch_avg_dist_dev = nullptr;
-            HANDLE_ERROR(cudaMemcpy(faces_type, type_host, num_faces * 2 * sizeof(int), cudaMemcpyHostToDevice));
-            HANDLE_ERROR(cudaMalloc(&patch_avg_dist_dev, k_rep * sizeof(float)));
-            get_patch_avg_dist(adj_dist_matrix, patch_avg_dist_dev, faces_type, k_rep, num_faces);
-            HANDLE_ERROR(cudaMemcpy(patch_avg_dist, patch_avg_dist_dev, sizeof(float) * k_rep, cudaMemcpyDeviceToHost));
             if (recur && master)
                 decompRecur();
         }
@@ -459,63 +442,55 @@ void Mesh::genFinalDecomp(bool recur)
     }
     else
     {
-        patch_avg_dist = new float[k_rep];
-        for (int i = 0; i < k_rep; i++) patch_avg_dist[i] = 0.;
+        local_avg_dist = 0.;
         max_cnt = max_patch_cnt;
     }
 }
 
 void Mesh::dumpFile(std::string path)
 {
-    std::ofstream f(path);
+    std::vector<int3> colorTable;
+    colorTable.emplace_back(make_int3(176, 23, 31));
+    colorTable.emplace_back(make_int3(255, 153, 18));
+    colorTable.emplace_back(make_int3(34, 139, 34));
+    colorTable.emplace_back(make_int3(3, 168, 158));
+    colorTable.emplace_back(make_int3(255, 99, 71));
+    colorTable.emplace_back(make_int3(255, 215, 0));
+    colorTable.emplace_back(make_int3(0, 255, 255));
+    colorTable.emplace_back(make_int3(135, 38, 87));
+    colorTable.emplace_back(make_int3(218, 112, 214));
+    colorTable.emplace_back(make_int3(127, 255, 0));
+    colorTable.emplace_back(make_int3(250, 235, 215));
+    FILE* f = fopen(path.c_str(), "w");
+    if (f == NULL) return;
+    // Header
+    fprintf(f, "ply\nformat ascii 1.0\n");
+    std::string header = "element vertex ";
+    header.append(std::to_string(3 * num_faces));
+    header.append("\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\n");
+    header.append("element face ");
+    header.append(std::to_string(num_faces));
+    header.append("\nproperty list uchar int vertex_index\nend_header\n");
+    fwrite(header.c_str(), 1, header.size(), f);
     // Write to the file
-    float* _center = new float[3 * num_faces];
-    HANDLE_ERROR(cudaMemcpy(_center, face_center, num_faces * 3 * sizeof(float), cudaMemcpyDeviceToHost));
     for (int i = 0; i < num_faces; i++)
     {
-        f << "v" << " " << std::to_string(_center[i * 3]) << " " << std::to_string(_center[i * 3 + 1]) << " " << std::to_string(_center[i * 3 + 2]);
-        switch (type_host[i] % 12)
-        {
-        case 0:
-            f << " 0.918 0.2 0.14" << std::endl;
-            break;
-        case 1:
-            f << " 0.6289 0.99 0.34" << std::endl;
-            break;
-        case 2:
-            f << " 0.2 0.52 0.99" << std::endl;
-            break;
-        case 3:
-            f << " 0.96 0.52 0.3" << std::endl;
-            break;
-        case 4:
-            f << " 0.2 0.5 0.5" << std::endl;
-            break;
-        case 5:
-            f << " 0.46 0.095 0.25" << std::endl;
-            break;
-        case 6:
-            f << " 1.0 0.99 0.33" << std::endl;
-            break;
-        case 7:
-            f << " 0.1 0.25 0.05" << std::endl;
-            break;
-        case 8:
-            f << " 0.914 0.195 0.5" << std::endl;
-            break;
-        case 9:
-            f << " 0.418 0.297 0.23" << std::endl;
-            break;
-        case 10:
-            f << " 0.49 0.51 0.124" << std::endl;
-            break;
-        case 11:
-            f << " 0.45 0.168 0.957" << std::endl;
-            break;
-        }
+        fprintf(f, "%f %f %f %d %d %d\n",
+            verts[faces[i * 3] * 3], verts[faces[i * 3] * 3 + 1], verts[faces[i * 3] * 3 + 2],
+            colorTable[type_host[i]].x, colorTable[type_host[i]].y, colorTable[type_host[i]].z);
+        fprintf(f, "%f %f %f %d %d %d\n",
+            verts[faces[i * 3 + 1] * 3], verts[faces[i * 3 + 1] * 3 + 1], verts[faces[i * 3 + 1] * 3 + 2],
+            colorTable[type_host[i]].x, colorTable[type_host[i]].y, colorTable[type_host[i]].z);
+        fprintf(f, "%f %f %f %d %d %d\n",
+            verts[faces[i * 3 + 2] * 3], verts[faces[i * 3 + 2] * 3 + 1], verts[faces[i * 3 + 2] * 3 + 2],
+            colorTable[type_host[i]].x, colorTable[type_host[i]].y, colorTable[type_host[i]].z);
+    }
+    for (int i = 0; i < num_faces; i++)
+    {
+        fprintf(f, "3 %d %d %d\n", i * 3, i * 3 + 1, i * 3 + 2);
     }
     // Close the file
-    f.close();
+    fclose(f);
 }
 
 void Mesh::debugFcaceProperty(float* prop, std::string path, bool normalize)

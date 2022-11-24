@@ -39,7 +39,7 @@ private:
 	int max_cnt = 0;
 
 	float max_patch_dist = -1.;
-	float* patch_avg_dist = nullptr;
+	float local_avg_dist = 0.;
 	float global_avg_dist = 0.;
 	float dihedral_ang_diff = 0.;
 	float face_max_dist = 0.;

@@ -10,7 +10,7 @@ int main()
 	mesh.preProcess();
 	mesh.genFuzzyDecomp();
 	mesh.genFinalDecomp(true);
-	mesh.dumpFile("d:/course_proj/meshdecomp/debug/decomp_k_r.obj");
+	mesh.dumpFile("d:/course_proj/meshdecomp/debug/decomp_k_r.ply");
 	return 0;
 }
 
