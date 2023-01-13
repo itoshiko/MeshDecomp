@@ -4,7 +4,7 @@ Implementation of Hierarchical Mesh Decomposition using Fuzzy Clustering and Cut
 Some processes implemented by naïve CUDA kernels for acceleration, but not carefully optimized. Achieving a total ~5x acceleration compared with baseline (https://github.com/fornorp/Mesh-Segmentation). Performing hierarchical k-way decomposition on a mesh containing 13000+ faces takes about 5s with RTX 3090.
 
 Usage
-MeshDecomp.exe <input> <output> <recursive (optional, 0 for single decomposition, 1 for recursive(default))>
+MeshDecomp.exe \<input\> \<output\> \<recursive (optional, 0 for single decomposition, 1 for recursive(default))\>
 
 Reference
 
