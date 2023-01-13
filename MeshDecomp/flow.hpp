@@ -187,11 +187,18 @@ public:
             Q.pop();
             for (int i = 0; i < G[x].size(); i++) {
                 Edge& e = edges[G[x][i]];
-                if (!visited[e.to] && e.cap > e.flow) {
-                    visited[e.to] = 1;
-                    d[e.to] = d[x] + 1;
-                    Q.push(e.to);
-                    id.push_back(e.to);
+                if (!visited[e.to]) {
+                    if (e.cap > e.flow)
+                    {
+                        visited[e.to] = 1;
+                        d[e.to] = d[x] + 1;
+                        Q.push(e.to);
+                        id.push_back(e.to);
+                    }
+                    else
+                    {
+                        // id.push_back(e.to);
+                    }
                 }
             }
         }

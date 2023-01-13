@@ -245,6 +245,9 @@ void construct_adjacency(
         (ang_dis_matrix, geo_dis_matrix, ang_dist_avg, geo_dist_avg, graph, flow, adj, delta, face_num, face_num);
     HANDLE_ERROR(cudaGetLastError());
     HANDLE_ERROR(cudaDeviceSynchronize());
+    cudaFree(ang_dis_matrix);
+    cudaFree(geo_dis_matrix);
+    cudaFree(adj);
 }
 
 static __global__
@@ -279,6 +282,7 @@ float get_dihedral_angle_diff(float3* normals, int* pred, size_t face_num)
     ArrayMin(d_angle, max_min + 1, face_num * face_num);
     float max_min_host[2];
     HANDLE_ERROR(cudaMemcpy(max_min_host, max_min, sizeof(float) * 2, cudaMemcpyDeviceToHost));
+    cudaFree(d_angle);
     return max_min_host[0] - max_min_host[1];
 }
 
@@ -369,12 +373,14 @@ int search_reps_k(float* dist_matrix, int* reps, size_t face_num, int max_rep)
     int rep_k = 1;
     for (int i = 1; i < max_rep - 1; i++)
     {
+        printf("%d  %f\n", i + 1, val_host[i]);
         if (max_gap > (val_host[i + 1] - val_host[i]))
         {
             max_gap = val_host[i + 1] - val_host[i];
             rep_k = i + 1;
         }
     }
+    cudaFree(dist_sum);
     return rep_k;
 }
 
@@ -510,6 +516,8 @@ float get_global_avg_dist(float* dist_matrix, size_t face_num)
     int cnt_host;
     HANDLE_ERROR(cudaMemcpy(&cnt_host, global_cnt, sizeof(int), cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaMemcpy(&avg_host, global_avg, sizeof(float), cudaMemcpyDeviceToHost));
+    cudaFree(cnt);
+    cudaFree(face_avg);
     return (avg_host / (float)cnt_host) * 1024.;
 }
 
@@ -674,6 +682,7 @@ bool update_representation(float* dist_matrix, float* prob_matrix, float* matric
         HANDLE_ERROR(cudaDeviceSynchronize());
         HANDLE_ERROR(cudaMemcpy(max_dist, result_dev, sizeof(float), cudaMemcpyDeviceToHost));
     }
+    cudaFree(avg_dist);
     return updated;
 }
 

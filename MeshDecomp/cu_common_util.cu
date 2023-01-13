@@ -10,6 +10,7 @@ void ArrayReduceSum(const float* input, float* output, size_t n) {
     cudaDeviceSynchronize();
     cub::DeviceReduce::Sum(temp_storage, temp_storage_bytes, input, output, n);
     cudaDeviceSynchronize();
+    cudaFree(temp_storage);
 }
 
 void ArrayReduceSum(const int* input, int* output, size_t n) {
@@ -30,6 +31,7 @@ void ArrayMax(const float* input, float* max_val, size_t n) {
     cudaDeviceSynchronize();
     cub::DeviceReduce::Max(temp_storage, temp_storage_bytes, input, max_val, n);
     cudaDeviceSynchronize();
+    cudaFree(temp_storage);
 }
 
 void ArrayMin(const float* input, float* min_val, size_t n) {
@@ -40,6 +42,7 @@ void ArrayMin(const float* input, float* min_val, size_t n) {
     cudaDeviceSynchronize();
     cub::DeviceReduce::Min(temp_storage, temp_storage_bytes, input, min_val, n);
     cudaDeviceSynchronize();
+    cudaFree(temp_storage);
 }
 
 static __global__
@@ -110,6 +113,7 @@ void ArrayArgmin(const float* input, float* min_val, int* min_idx, size_t n) {
 
     HANDLE_ERROR(cudaMemcpy(min_idx, &(d_out->key), sizeof(int), cudaMemcpyDeviceToDevice));
     HANDLE_ERROR(cudaMemcpy(min_val, &(d_out->value), sizeof(float), cudaMemcpyDeviceToDevice));
+    cudaFree(temp_storage);
 }
 
 static __global__

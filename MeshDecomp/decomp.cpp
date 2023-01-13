@@ -5,12 +5,12 @@
 
 int main()
 {
-	Mesh mesh("D:/course_proj/MeshDecomp/asset/smpl_mesh.ply");
-	// Mesh mesh("D:/course_proj/Mesh-Segmentation-master/dino_fuzzyK1_010_new.ply");
-	mesh.preProcess();
-	mesh.genFuzzyDecomp();
-	mesh.genFinalDecomp(true);
-	mesh.dumpFile("d:/course_proj/meshdecomp/debug/decomp_k_r.ply");
+	Mesh* mesh = nullptr;
+	mesh = new Mesh("D:/course_proj/MeshDecomp/asset/dino.ply");
+	mesh->preProcess();
+	mesh->genFuzzyDecomp();
+	mesh->genFinalDecomp(true);
+	mesh->dumpFile("D:/course_proj/MeshDecomp/asset/decomp/dino.ply");
 	return 0;
 }
 

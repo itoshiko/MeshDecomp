@@ -5,7 +5,7 @@
 #include "mesh_util.cuh"
 
 #define REP_ITER_MAX 20
-#define TH_DIST_RATIO 0.25
+#define TH_DIST_RATIO 0.2
 #define TH_ANGLE_DIFF 0.30
 #define TH_REP_DIST 0.15
 
@@ -31,7 +31,7 @@ private:
 	
 	// parameters
 	size_t dist_matrix_pitch = 0;
-	float delta = 0.8;
+	float delta = 0.6;
 	int max_rep_k = 20;
 	int k_rep = -1;
 	bool two = false;

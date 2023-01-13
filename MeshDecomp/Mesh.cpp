@@ -81,6 +81,7 @@ Mesh::Mesh(Mesh* mesh, std::vector<int> &select)
     face_max_dist = mesh->face_max_dist;
     global_avg_dist = mesh->global_avg_dist;
     local_avg_dist = get_global_avg_dist(adj_dist_matrix, num_faces);
+    HANDLE_ERROR(cudaFree(select_dev));
 }
 
 void Mesh::preProcess()
@@ -141,14 +142,14 @@ Mesh::~Mesh()
     if (master)
     {
         if (verts != nullptr) delete[] verts;
-        if (faces != nullptr) delete[] faces;
         HANDLE_ERROR(cudaFree(verts_dev));
-        HANDLE_ERROR(cudaFree(face_normal));
         HANDLE_ERROR(cudaFree(face_center));
-        HANDLE_ERROR(cudaFree(adj_pred_matrix));
         HANDLE_ERROR(cudaFree(graph_weight_matrix));
     }
+    if (faces != nullptr) delete[] faces;
     if (type_host != nullptr) delete[] type_host;
+    HANDLE_ERROR(cudaFree(adj_pred_matrix));
+    HANDLE_ERROR(cudaFree(face_normal));
     HANDLE_ERROR(cudaFree(faces_dev));
     HANDLE_ERROR(cudaFree(faces_type));
     HANDLE_ERROR(cudaFree(adj_dist_matrix));
@@ -296,11 +297,6 @@ void Mesh::genFuzzyDecomp()
     for (int iter = 0; iter < REP_ITER_MAX; iter++)
     {
         bool updated = update_representation(adj_dist_matrix, prob_matrix, matric_matrix, faces_type, reps, &max_patch_dist, 0.05, k_rep, num_faces);
-        //cudaMemcpy(prob_debug, prob_matrix, num_faces * 2 * sizeof(float), cudaMemcpyDeviceToHost);
-        //std::string path("D:/course_proj/MeshDecomp/debug/face_");
-        //path += std::to_string(iter + 1);
-        //path += ".obj";
-        //debugFcaceProperty(prob_debug, path, true);
         if (!updated)
             break;
         std::cout << "UPDATE ITER " << iter << std::endl;
@@ -336,8 +332,8 @@ void Mesh::genFinalDecomp(bool recur)
         if (type_host[i + num_faces] < 0)
             cnt[type_host[i]]++;
     }
-    for (int i = 0; i < k_rep; i++)
-        printf("rep %d  faces cnt %d\n", i, cnt[i]);
+    //for (int i = 0; i < k_rep; i++)
+    //    printf("rep %d  faces cnt %d\n", i, cnt[i]);
     int max_patch_cnt = 0;
     for (int i = 0; i < k_rep; i++)
         if (cnt[i] > max_patch_cnt) max_patch_cnt = cnt[i];
